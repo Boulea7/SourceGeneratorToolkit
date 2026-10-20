@@ -1,7 +1,6 @@
-## v1.2.7-pre.3 (prerelease)
+## v1.2.7 (patch)
 
-Changes since v1.2.7-pre.2:
+Changes since v1.2.6:
 
-- Bump Polyfill from 11.4.3 to 11.4.5 (dependabot[bot])
-- Bump the system group with 2 updates (dependabot[bot])
+- Report malformed metadata JSON at the line it breaks on [patch] (Claude)
 
