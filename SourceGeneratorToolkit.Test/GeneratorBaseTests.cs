@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
 using ktsu.SourceGeneratorToolkit.Testing;
 
 [TestClass]
@@ -71,6 +72,70 @@ public sealed class GeneratorBaseTests
 		Assert.AreEqual(1, result.Diagnostics.Length);
 		Assert.AreEqual(TestDiagnostics.MetadataParseFailed.Id, result.Diagnostics[0].Id);
 		Assert.AreEqual(DiagnosticSeverity.Error, result.Diagnostics[0].Severity);
+	}
+
+	[TestMethod]
+	[DataRow("\n", DisplayName = "LF")]
+	[DataRow("\r\n", DisplayName = "CRLF")]
+	public void AMalformedMetadataFileIsReportedAtTheBadLine(string newLine)
+	{
+		string json = string.Join(newLine, "{", "  \"things\":", "    [1,,2]", "}");
+
+		Diagnostic diagnostic = ParseFailure(json);
+
+		FileLinePositionSpan span = diagnostic.Location.GetLineSpan();
+		Assert.AreEqual(LocationKind.ExternalFile, diagnostic.Location.Kind);
+		Assert.AreEqual("things.json", Path.GetFileName(span.Path));
+		Assert.AreEqual(2, span.StartLinePosition.Line);
+
+		// System.Text.Json reports the position it had reached, which is the first comma of the pair.
+		Assert.AreEqual(json.Split('\n')[2].IndexOf(",,", StringComparison.Ordinal), span.StartLinePosition.Character);
+	}
+
+	[TestMethod]
+	public void AParseFailureAfterMultiByteCharactersIsLocatedByCharacterNotByte()
+	{
+		// "é" is one character and two UTF-8 bytes, and "😀" is two characters (a surrogate pair) and
+		// four bytes. The ASCII twin has the same characters in the same places, so the two failures
+		// must land on the same character even though the byte positions differ.
+		LinePosition multiByte = ParseFailure("{\n  \"things\": [\"é😀\",,1]\n}").Location.GetLineSpan().StartLinePosition;
+		LinePosition ascii = ParseFailure("{\n  \"things\": [\"abc\",,1]\n}").Location.GetLineSpan().StartLinePosition;
+
+		Assert.AreEqual(1, multiByte.Line);
+		Assert.AreEqual(ascii, multiByte);
+	}
+
+	[TestMethod]
+	public void AParseFailureAtTheEndOfTheFileIsLocatedAtTheEnd()
+	{
+		string json = "{\n  \"things\": [";
+
+		Diagnostic diagnostic = ParseFailure(json);
+
+		FileLinePositionSpan span = diagnostic.Location.GetLineSpan();
+		Assert.AreEqual("things.json", Path.GetFileName(span.Path));
+		Assert.AreEqual(1, span.StartLinePosition.Line);
+		Assert.IsLessThanOrEqualTo(json.Split('\n')[1].Length, span.StartLinePosition.Character);
+	}
+
+	[TestMethod]
+	public void AShapeFailureWithNoPositionIsStillReportedWithoutALocation()
+	{
+		GeneratorRunResult result = Harness.Run(new UnsupportedShapeGenerator());
+
+		Assert.AreEqual(1, result.Diagnostics.Length);
+		Assert.AreEqual(Location.None, result.Diagnostics[0].Location);
+	}
+
+	private static Diagnostic ParseFailure(string json)
+	{
+		GeneratorRunResult result = Harness.Run(
+			new ThingsGenerator(),
+			new Dictionary<string, string> { ["things.json"] = json });
+
+		Assert.AreEqual(1, result.Diagnostics.Length);
+		Assert.AreEqual(TestDiagnostics.MetadataParseFailed.Id, result.Diagnostics[0].Id);
+		return result.Diagnostics[0];
 	}
 
 	[TestMethod]
