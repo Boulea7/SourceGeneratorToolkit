@@ -164,7 +164,8 @@ public sealed class MetadataFile(string fileName, string text, SourceText? sourc
 		}
 		catch (JsonException ex)
 		{
-			return ParseFailed(ex);
+			context.ReportAt(parseFailed, LocationOf(ex), FileName, ex.Message);
+			return null;
 		}
 		catch (NotSupportedException ex)
 		{
@@ -193,6 +194,85 @@ public sealed class MetadataFile(string fileName, string text, SourceText? sourc
 			return null;
 		}
 	}
+
+	/// <summary>
+	/// Finds where in the file a <see cref="JsonException"/> says the JSON went wrong.
+	/// </summary>
+	/// <param name="ex">The exception thrown while reading the file.</param>
+	/// <returns>
+	/// A location covering the character at the reported position, or <see cref="Location.None"/>
+	/// when the exception carries no position or there is no source text to locate it in.
+	/// </returns>
+	/// <remarks>
+	/// <see cref="JsonException.LineNumber"/> counts <c>\n</c> line feeds from zero, and
+	/// <see cref="JsonException.BytePositionInLine"/> counts UTF-8 bytes rather than characters, so
+	/// the position is walked through the line a character at a time. It is clamped to the line, so
+	/// a position past its end points at the end of the line.
+	/// </remarks>
+	private Location LocationOf(JsonException ex)
+	{
+		if (sourceText is null || ex.LineNumber is not long lineNumber || lineNumber < 0)
+		{
+			return Location.None;
+		}
+
+		int index = LineStart(lineNumber);
+		if (index < 0)
+		{
+			return Location.None;
+		}
+
+		long bytes = ex.BytePositionInLine ?? 0;
+		while (bytes > 0 && index < Text.Length && Text[index] is not '\r' and not '\n')
+		{
+			int width = CharactersAt(index);
+			bytes -= Utf8Bytes(index, width);
+			index += width;
+		}
+
+		int length = index < Text.Length && Text[index] is not '\r' and not '\n' ? 1 : 0;
+		return LocationAt(index, length);
+	}
+
+	/// <summary>
+	/// Finds where a line starts, counting lines by <c>\n</c> line feeds as System.Text.Json does.
+	/// </summary>
+	/// <param name="lineNumber">The zero-based line number.</param>
+	/// <returns>The offset of the line's first character, or -1 when the file has fewer lines.</returns>
+	private int LineStart(long lineNumber)
+	{
+		int index = 0;
+		for (long line = 0; line < lineNumber && index >= 0; line++)
+		{
+			int lineFeed = Text.IndexOf('\n', index);
+			index = lineFeed < 0 ? -1 : lineFeed + 1;
+		}
+
+		return index;
+	}
+
+	/// <summary>
+	/// Counts the characters that make up the code point at an offset: two for a surrogate pair,
+	/// otherwise one.
+	/// </summary>
+	/// <param name="index">The offset of the code point's first character.</param>
+	/// <returns>The number of characters in the code point.</returns>
+	private int CharactersAt(int index) =>
+		char.IsHighSurrogate(Text[index]) && index + 1 < Text.Length && char.IsLowSurrogate(Text[index + 1]) ? 2 : 1;
+
+	/// <summary>
+	/// Counts the bytes UTF-8 uses for the code point at an offset.
+	/// </summary>
+	/// <param name="index">The offset of the code point's first character.</param>
+	/// <param name="characters">The number of characters in the code point.</param>
+	/// <returns>The code point's length in UTF-8.</returns>
+	private int Utf8Bytes(int index, int characters) =>
+		characters == 2 ? 4 : Text[index] switch
+		{
+			< '\u0080' => 1,
+			< '\u0800' => 2,
+			_ => 3,
+		};
 
 	private Location LocationAt(int index, int length)
 	{
